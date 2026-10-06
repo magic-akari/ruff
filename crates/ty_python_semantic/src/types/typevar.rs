@@ -165,7 +165,7 @@ impl<'db> Type<'db> {
 ///
 /// The search stops at growing recursive alias references. It can miss occurrences that are
 /// exposed only by subsequent specializations, but never treats an incomplete search as a match.
-fn find_free_typevar<'db, T: Copy>(
+pub(super) fn find_free_typevar<'db, T: Copy>(
     db: &'db dyn Db,
     env: &ProgramEnvironment<'db>,
     ty: Type<'db>,

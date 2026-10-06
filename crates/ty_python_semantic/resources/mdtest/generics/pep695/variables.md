@@ -110,6 +110,47 @@ def use_default[F = CallableTypeOf[identity]](): ...
 type Alias[F = CallableTypeOf[identity]] = list[F]
 ```
 
+### Defaults containing generic property accessors
+
+A protocol's property accessor binds its own type variables. Those variables do not make a default
+depend on another generic scope.
+
+```py
+from typing import Protocol
+
+class HasValue(Protocol):
+    @property
+    def value(self) -> object: ...
+    @value.setter
+    def value[T](self, value: tuple[T, T]) -> None: ...
+
+class Holder[F = HasValue]: ...  # no diagnostic
+
+def use_default[F = HasValue](): ...  # no diagnostic
+
+type Alias[F = HasValue] = list[F]  # no diagnostic
+
+def paramspec_default[**P = [HasValue]](): ...  # no diagnostic
+```
+
+A property accessor can also capture an outer type parameter. That parameter remains out of scope
+for a nested default, even when the accessor binds another type parameter of its own.
+
+```py
+def outer[T]():
+    class HasValue(Protocol):
+        @property
+        def value(self) -> object: ...
+        @value.setter
+        def value[U](self, value: tuple[U, T]) -> None: ...
+
+    # error: [invalid-type-variable-default] "Type parameter `F` cannot use outer-scope type parameter `T` as its default"
+    def use_default[F = HasValue](): ...
+
+    # error: [invalid-type-variable-default] "Type parameter `P` cannot use outer-scope type parameter `T` as its default"
+    def paramspec_default[**P = [HasValue]](): ...
+```
+
 ### Defaults containing bounded type variables
 
 A default can specialize a bounded generic with an earlier type variable whose upper bound is

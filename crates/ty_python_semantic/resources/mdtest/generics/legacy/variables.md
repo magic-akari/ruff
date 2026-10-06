@@ -400,6 +400,33 @@ def use_default(value: F) -> F:
     return value
 ```
 
+### Defaults containing generic property accessors
+
+A protocol's property accessor binds its own type variables. Those variables do not make a default
+depend on another generic scope.
+
+```py
+from typing_extensions import Generic, ParamSpec, Protocol, TypeVar
+
+T = TypeVar("T")
+
+class HasValue(Protocol):
+    @property
+    def value(self) -> object: ...
+    @value.setter
+    def value(self, value: tuple[T, T]) -> None: ...
+
+F = TypeVar("F", default=HasValue)
+P = ParamSpec("P", default=[HasValue])
+
+class Holder(Generic[F]): ...  # no diagnostic
+class ParamspecHolder(Generic[P]): ...  # no diagnostic
+
+# no diagnostic
+def use_default(value: F) -> F:
+    return value
+```
+
 ### Defaults containing bounded type variables
 
 ```toml
