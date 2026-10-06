@@ -897,6 +897,36 @@ Stop2T = TypeVar("Stop2T", default=int)
 class Bad(Generic[Start2T, Stop2T, StepT]): ...
 ```
 
+## Defaults through type aliases
+
+```toml
+[environment]
+python-version = "3.13"
+```
+
+An alias in a default can reference an earlier type parameter, but cannot hide an out-of-scope or
+later parameter. Arguments that the alias does not use do not affect the default.
+
+```py
+from typing_extensions import Generic, TypeVar
+
+type Items[T] = list[T]
+type Ignored[T] = int
+
+T = TypeVar("T", default=int)
+U = TypeVar("U", default=Items[T])
+V = TypeVar("V", default=Ignored[T])
+
+class Good(Generic[T, U]): ...
+class Unused(Generic[V]): ...
+
+# error: [invalid-generic-class] "Default of `U` cannot reference out-of-scope type variable `T`"
+class OutOfScope(Generic[U]): ...
+
+# error: [invalid-generic-class] "Default of `U` cannot reference later type parameter `T`"
+class Later(Generic[U, T]): ...
+```
+
 ## Narrowing class objects of final generic classes
 
 A specialized alias is distinct from the bare class object, even when the specialization matches the

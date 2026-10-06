@@ -783,6 +783,77 @@ def ok2(x: T1, y: DefaultStrT) -> tuple[T1, DefaultStrT]:
     return x, y
 ```
 
+### Defaults through type aliases
+
+A type alias does not make an outer type parameter available to a nested generic function or type
+alias. We check the alias's value, so an unused argument does not introduce a dependency. The same
+scope check applies to each type in a `ParamSpec` default list.
+
+```py
+type Items[T] = list[T]
+type Ignored[T] = int
+type Tree[T] = T | list[Tree[T]]
+type Either[T, U] = T | U
+
+def outer[T]():
+    # error: [invalid-type-variable-default] "Type parameter `U` cannot use outer-scope type parameter `T` as its default"
+    def inner[U = Items[T]](): ...
+
+    # error: [invalid-type-variable-default]
+    type Invalid[U = Items[T]] = tuple[U]
+
+    # error: [invalid-type-variable-default]
+    def nested_alias[U = Items[Items[T]]](): ...
+
+    # error: [invalid-type-variable-default]
+    def recursive_alias[U = Tree[T]](): ...
+
+    # error: [invalid-type-variable-default]
+    def direct_paramspec[**P = [T]](): ...
+
+    # error: [invalid-type-variable-default]
+    def aliased_paramspec[**P = [Items[T]]](): ...
+
+    # error: [invalid-type-variable-default]
+    type ParamspecAlias[**P = [Items[T]]] = tuple[int]
+
+    def unused[U = Ignored[T]](): ...
+    def simplified[U = Either[object, T]](): ...
+    type Unused[U = Ignored[T]] = tuple[U]
+    def unused_paramspec[**P = [Ignored[T]]](): ...
+
+def in_scope[T, U = Items[T]](): ...
+def recursive_in_scope[T, U = Tree[T]](): ...
+def paramspec_in_scope[T, **P = [T, Items[T]]](): ...
+
+type InScope[T, U = Items[T]] = tuple[T, U]
+type ParamspecInScope[T, **P = [T, Items[T]]] = tuple[T]
+```
+
+The same scoping and ordering rules apply when a legacy type variable has an aliased default.
+
+```py
+from typing import TypeVar
+
+T = TypeVar("T", default=int)
+U = TypeVar("U", default=Items[T])
+V = TypeVar("V", default=Ignored[T])
+
+# error: [invalid-type-variable-default] "Invalid use of type variable `U`: default of `U` refers to out-of-scope type variable `T`"
+def out_of_scope(value: U) -> U:
+    return value
+
+# error: [invalid-type-variable-default] "Invalid use of type variable `U`: default of `U` refers to later parameter `T`"
+def later(value: U, other: T) -> tuple[U, T]:
+    return value, other
+
+def earlier(value: T, other: U) -> tuple[T, U]:
+    return value, other
+
+def unused(value: V) -> V:
+    return value
+```
+
 ## Mixed-scope type parameters
 
 Methods can have type parameters that are scoped to the method itself, while also referring to type

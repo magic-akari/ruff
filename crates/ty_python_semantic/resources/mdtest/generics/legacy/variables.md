@@ -378,6 +378,28 @@ reveal_type(Valid[int, str, None]())  # revealed: Valid[int, str, None]
 class Invalid(Generic[U]): ...
 ```
 
+### Defaults containing generic callables
+
+A generic callable binds its own type variables. Those variables do not have to be parameters of a
+class or function that uses the callable as a default.
+
+```py
+from typing_extensions import Generic, TypeVar
+from ty_extensions._internal import CallableTypeOf
+
+T = TypeVar("T")
+
+def identity(value: T) -> T:
+    return value
+
+F = TypeVar("F", default=CallableTypeOf[identity])
+
+class Holder(Generic[F]): ...
+
+def use_default(value: F) -> F:
+    return value
+```
+
 ### Defaults containing bounded type variables
 
 ```toml

@@ -81,6 +81,35 @@ def multiple_legacy_defaults[T = K, U = K](value: K) -> K:
     return value
 ```
 
+This restriction also applies when the legacy type variable appears inside an alias's value:
+
+```py
+type Items[T] = list[T]
+type Ignored[T] = int
+
+# error: [unbound-type-variable] "Legacy type variable `K` cannot be used in a function with PEP 695 type parameters"
+def aliased_legacy_default[T = Items[K]](): ...
+def unused_legacy_default[T = Ignored[K]](): ...
+```
+
+### Defaults containing generic callables
+
+A generic callable binds its own type variables. Those variables do not have to be parameters of a
+class, function, or type alias that uses the callable as a default.
+
+```py
+from ty_extensions._internal import CallableTypeOf
+
+def identity[T](value: T) -> T:
+    return value
+
+class Holder[F = CallableTypeOf[identity]]: ...
+
+def use_default[F = CallableTypeOf[identity]](): ...
+
+type Alias[F = CallableTypeOf[identity]] = list[F]
+```
+
 ### Defaults containing bounded type variables
 
 A default can specialize a bounded generic with an earlier type variable whose upper bound is

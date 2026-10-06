@@ -1984,6 +1984,26 @@ class Bad[S = T, T = int]: ...
 class AlsoBad[S = list[T], T = int]: ...
 ```
 
+## Defaults through type aliases
+
+An alias in a default can reference an earlier type parameter, but cannot hide an out-of-scope or
+later parameter. Arguments that the alias does not use do not affect the default.
+
+```py
+type Items[T] = list[T]
+type Ignored[T] = int
+
+class Good[T, U = Items[T]]: ...
+
+# error: [invalid-generic-class] "Default of `U` cannot reference later type parameter `T`"
+class Later[U = Items[T], T = int]: ...
+
+class Outer[T]:
+    # error: [invalid-generic-class] "Default of `U` cannot reference out-of-scope type variable `T`"
+    class Inner[U = Items[T]]: ...
+    class Unused[U = Ignored[T]]: ...
+```
+
 ## Cyclic class definitions
 
 ### F-bounded quantification
