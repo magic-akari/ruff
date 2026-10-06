@@ -151,9 +151,17 @@ impl<'db> Type<'db> {
     }
 }
 
-/// Finds a free type-variable occurrence in the type's value, including alias values and
-/// structural members. Type-variable bounds and defaults are metadata, not occurrences, and
-/// parameters bound by a nested callable's signature are not free in the enclosing type.
+/// Returns the first non-`None` result of `query` over free type-variable occurrences in the type's
+/// value, including alias values and structural members. Type-variable bounds and defaults are
+/// metadata, not occurrences, and parameters bound by a nested callable's signature are not free
+/// in the enclosing type.
+///
+/// For an outer type variable `U`, `Erased[U]` has no free occurrence, while `Retained[U]` does:
+///
+/// ```python
+/// type Erased[T] = int
+/// type Retained[T] = list[T]
+/// ```
 ///
 /// The search stops at growing recursive alias references. It can miss occurrences that are
 /// exposed only by subsequent specializations, but never treats an incomplete search as a match.
