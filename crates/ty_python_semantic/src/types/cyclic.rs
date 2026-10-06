@@ -62,8 +62,9 @@ pub enum TypeIdentity<'db> {
 impl<'db> Type<'db> {
     /// Return whether expanding lazy attributes may encounter unbounded recursive specialization.
     ///
-    /// Specialization-flow analysis omits protocol methods, so a different specialization of an
-    /// active protocol definition is conservatively considered growing.
+    /// This uses the recursion identities for type relations, whose specialization-flow analysis
+    /// omits protocol methods. A different specialization of an active protocol definition is
+    /// therefore conservatively considered growing.
     pub(super) fn contains_growing_type(
         self,
         db: &'db dyn Db,
@@ -770,12 +771,7 @@ impl<'db> SpecializationFlowVisitor<'db> {
             }
             RecursiveDefinition::TypedDict(origin) => {
                 let typed_dict = TypedDictType::new(origin.identity_specialization(db));
-                for field in typed_dict.items(db).values() {
-                    self.visit_type(db, field.declared_ty);
-                }
-                if let Some(extra_items) = typed_dict.explicit_extra_items(db) {
-                    self.visit_type(db, extra_items.declared_ty);
-                }
+                walk_typed_dict_fields(db, typed_dict, self);
             }
         }
         true
@@ -1006,6 +1002,14 @@ impl<'db> ProtocolInstanceType<'db> {
     /// method signatures in the flow graph so finite specialization cycles can use exact type
     /// identities. If signature inference re-enters the flow query, its conservative cycle
     /// recovery keeps the definition-level guard.
+    ///
+    /// For example, inspecting `Reset[str]` must also inspect `Reset[int]` before stopping at its
+    /// exact repetition:
+    ///
+    /// ```python
+    /// class Reset[T](Protocol):
+    ///     def next(self) -> Reset[int]: ...
+    /// ```
     pub(super) fn dynamic_content_identity(self, db: &'db dyn Db) -> TypeIdentity<'db> {
         if let Some((origin, _)) = self
             .class_origin(db)

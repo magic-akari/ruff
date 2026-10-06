@@ -430,6 +430,7 @@ pub enum TypeAliasType<'db> {
 }
 
 /// Visit an alias's type arguments without evaluating its value.
+/// This includes arguments for parameters that the alias's value does not use.
 pub(super) fn walk_type_alias_arguments<'db, V: visitor::TypeVisitor<'db> + ?Sized>(
     db: &'db dyn Db,
     type_alias: TypeAliasType<'db>,
@@ -442,6 +443,7 @@ pub(super) fn walk_type_alias_arguments<'db, V: visitor::TypeVisitor<'db> + ?Siz
 
 /// Visit an alias's value, falling back to its arguments when the recursion guard is hit.
 /// A skipped value is reported through [`visitor::TypeVisitor::notify_skipped_lazy_type_attributes`].
+/// The fallback can visit arguments erased from the value, so callers must allow false positives.
 pub(super) fn walk_type_alias_with_recursion_guard<'db, V: visitor::TypeVisitor<'db> + ?Sized>(
     db: &'db dyn Db,
     alias: TypeAliasType<'db>,

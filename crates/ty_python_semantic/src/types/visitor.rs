@@ -45,11 +45,15 @@ pub(crate) trait TypeVisitor<'db> {
 
     fn visit_type(&self, db: &'db dyn Db, ty: Type<'db>);
 
+    /// Visit a signature, allowing overrides to bind its local type parameters during traversal.
     fn visit_signature(&self, db: &'db dyn Db, signature: &super::Signature<'db>) {
         super::walk_signature(db, signature, self);
     }
 
-    /// Visit an exposed parameter or return type while retaining its callable's binders.
+    /// Visit a type exposed by a callable, such as a property's read or write type.
+    ///
+    /// Overrides can bind the callable's local type parameters without visiting unrelated
+    /// parameters that do not contribute to the exposed type.
     fn visit_type_in_callable(&self, db: &'db dyn Db, ty: Type<'db>, _callable: Type<'db>) {
         self.visit_type(db, ty);
     }
