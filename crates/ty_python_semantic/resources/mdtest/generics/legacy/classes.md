@@ -3278,5 +3278,39 @@ def check(child: Child[str]) -> None:
     child.items.append(1)  # error: [invalid-argument-type]
 ```
 
+## Narrowing beside finite recursive specializations
+
+Recursive protocol methods and `TypedDict` fields can reset a type argument to a fixed type. These
+finite specializations remain fully static, allowing negative tuple patterns to narrow a neighboring
+element.
+
+```toml
+[environment]
+python-version = "3.10"
+```
+
+```py
+from __future__ import annotations
+
+from typing import Generic, Protocol, TypeVar, TypedDict
+
+T = TypeVar("T")
+T_co = TypeVar("T_co", covariant=True)
+
+class Node(Protocol[T_co]):
+    def next(self) -> Node[int]: ...
+
+class Record(TypedDict, Generic[T]):
+    next: Record[int]
+
+def check(pair: tuple[Node[str] | Record[str], int | str]) -> str:
+    match pair:
+        case (_, int()):
+            return "matched"
+        case _:
+            reveal_type(pair[1])  # revealed: str
+            return pair[1]  # no diagnostic
+```
+
 [crtp]: https://en.wikipedia.org/wiki/Curiously_recurring_template_pattern
 [f-bound]: https://en.wikipedia.org/wiki/Bounded_quantification#F-bounded_quantification

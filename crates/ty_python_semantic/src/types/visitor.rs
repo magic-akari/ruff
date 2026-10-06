@@ -10,9 +10,8 @@ use ty_python_core::definition::Definition;
 use crate::types::{
     BoundMethodType, BoundSuperType, BoundTypeVarInstance, CallableType, EnumComplementType,
     GenericAlias, IntersectionType, KnownBoundMethodType, KnownInstanceType, NominalInstanceType,
-    PropertyInstanceType, ProtocolInstanceType, RecursiveType, SlotDescriptorType,
-    StaticClassLiteral, SubclassOfType, Type, TypeAliasType, TypeFormType, TypeGuardType,
-    TypeIsType, TypedDictType, UnionType,
+    PropertyInstanceType, ProtocolInstanceType, RecursiveType, SlotDescriptorType, SubclassOfType,
+    Type, TypeAliasType, TypeFormType, TypeGuardType, TypeIsType, TypedDictType, UnionType,
     bound_super::walk_bound_super_type,
     callable::walk_callable_type,
     class::walk_generic_alias,
@@ -470,9 +469,9 @@ pub(super) fn materialization_is_noop<'db>(
 /// Type-variable bounds and constraints are included. A bound of `Unknown` prevents a redundant-cast
 /// diagnostic even when the source and target types are considered equivalent.
 ///
-/// Class-based protocol interfaces can be recursively specialized. An exact recursive cycle adds
-/// no new information, but revisiting the same protocol definition under a different
-/// specialization may expose different members and is therefore indeterminate.
+/// Class-based protocol interfaces can be recursively specialized. Finite specialization cycles
+/// are inspected until an exact type repeats. A recursion that can keep producing new
+/// specializations is indeterminate.
 ///
 /// ```python
 /// class Exact[T](Protocol):
@@ -501,8 +500,6 @@ fn dynamic_content_impl<'db>(
     struct DynamicContentVisitor<'a, 'db> {
         env: &'a ProgramEnvironment<'db>,
         recursion_guard: TypeCollector<'db>,
-        active_class_protocols: ActiveRecursionDetector<StaticClassLiteral<'db>>,
-        active_class_typed_dicts: ActiveRecursionDetector<StaticClassLiteral<'db>>,
         active_types: ActiveRecursionDetector<TypeIdentity<'db>>,
         content: Cell<DynamicContent>,
         mode: DynamicContentMode,
@@ -628,7 +625,7 @@ fn dynamic_content_impl<'db>(
             protocol: ProtocolInstanceType<'db>,
         ) {
             let protocol_ty = Type::ProtocolInstance(protocol);
-            let Some((origin, specialization)) = protocol
+            let Some((_, specialization)) = protocol
                 .class_origin(db)
                 .and_then(|class| class.static_class_literal(db))
             else {
@@ -643,8 +640,8 @@ fn dynamic_content_impl<'db>(
                 }
             }
 
-            self.active_class_protocols.visit(
-                &origin,
+            self.active_types.visit(
+                &protocol.dynamic_content_identity(db),
                 || self.record(DynamicContent::Indeterminate),
                 || {
                     walk_protocol_instance_interface(db, protocol.interface(db), protocol_ty, self);
@@ -653,7 +650,7 @@ fn dynamic_content_impl<'db>(
         }
 
         fn visit_typed_dict_type(&self, db: &'db dyn Db, typed_dict: TypedDictType<'db>) {
-            let Some((origin, specialization)) = typed_dict
+            let Some((_, specialization)) = typed_dict
                 .defining_class()
                 .and_then(|class| class.static_class_literal(db))
             else {
@@ -668,8 +665,8 @@ fn dynamic_content_impl<'db>(
                 }
             }
 
-            self.active_class_typed_dicts.visit(
-                &origin,
+            self.active_types.visit(
+                &Type::TypedDict(typed_dict).to_type_identity(db),
                 || self.record(DynamicContent::Indeterminate),
                 || walk_typed_dict_fields(db, typed_dict, self),
             );
@@ -679,8 +676,6 @@ fn dynamic_content_impl<'db>(
     let visitor = DynamicContentVisitor {
         env,
         recursion_guard: TypeCollector::default(),
-        active_class_protocols: ActiveRecursionDetector::default(),
-        active_class_typed_dicts: ActiveRecursionDetector::default(),
         active_types: ActiveRecursionDetector::default(),
         content: Cell::new(DynamicContent::Absent),
         mode,

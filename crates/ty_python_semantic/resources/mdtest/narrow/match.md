@@ -3456,8 +3456,7 @@ def _(pair: tuple[Reset[int], int | str]) -> str:
             return pair[1]
 ```
 
-Starting from `Reset[str]` also reaches only `Reset[int]`, but we do not yet recognize that this
-permits the same narrowing:
+Starting from `Reset[str]` also reaches only `Reset[int]` and permits the same narrowing:
 
 ```py
 def _(pair: tuple[Reset[str], int | str]) -> str:
@@ -3465,12 +3464,11 @@ def _(pair: tuple[Reset[str], int | str]) -> str:
         case (_, int()):
             return "matched"
         case _:
-            # TODO: This should narrow to `str`.
-            reveal_type(pair[1])  # revealed: int | str
-            return pair[1]  # error: [invalid-return-type]
+            reveal_type(pair[1])  # revealed: str
+            return pair[1]  # no diagnostic
 ```
 
-Swapping two type arguments produces a finite cycle too, but has the same limitation:
+Swapping two type arguments produces a finite cycle too:
 
 ```py
 class Rotated[A, B](Protocol):
@@ -3481,9 +3479,8 @@ def _(pair: tuple[Rotated[int, str], int | str]) -> str:
         case (_, int()):
             return "matched"
         case _:
-            # TODO: This should narrow to `str`.
-            reveal_type(pair[1])  # revealed: int | str
-            return pair[1]  # error: [invalid-return-type]
+            reveal_type(pair[1])  # revealed: str
+            return pair[1]  # no diagnostic
 ```
 
 The same applies when an attribute swaps the arguments:
@@ -3497,13 +3494,12 @@ def _(pair: tuple[Data[int, str], int | str]) -> str:
         case (_, int()):
             return "matched"
         case _:
-            # TODO: This should narrow to `str`.
-            reveal_type(pair[1])  # revealed: int | str
-            return pair[1]  # error: [invalid-return-type]
+            reveal_type(pair[1])  # revealed: str
+            return pair[1]  # no diagnostic
 ```
 
 An argument can stabilize through union normalization. Adding `int` again does not change
-`str | int`, but we do not yet recognize that these members remain fully static:
+`str | int`, so these members remain fully static:
 
 ```py
 class Normalized[T](Protocol):
@@ -3514,13 +3510,12 @@ def _(pair: tuple[Normalized[str], int | str]) -> str:
         case (_, int()):
             return "matched"
         case _:
-            # TODO: This should narrow to `str`.
-            reveal_type(pair[1])  # revealed: int | str
-            return pair[1]  # error: [invalid-return-type]
+            reveal_type(pair[1])  # revealed: str
+            return pair[1]  # no diagnostic
 ```
 
-A `TypedDict` whose field swaps its type arguments likewise has only two specializations, but
-currently prevents element-wise narrowing:
+A `TypedDict` whose field swaps its type arguments likewise has only two specializations and permits
+element-wise narrowing:
 
 ```py
 from typing import TypedDict
@@ -3533,7 +3528,23 @@ def _(pair: tuple[Record[int, str], int | str]) -> str:
         case (_, int()):
             return "matched"
         case _:
-            # TODO: This should narrow to `str`.
+            reveal_type(pair[1])  # revealed: str
+            return pair[1]  # no diagnostic
+```
+
+A finite cycle still prevents narrowing if a recursive reference introduces `Any`:
+
+```py
+from typing import Any
+
+class GradualReset[T](Protocol):
+    def method(self) -> GradualReset[Any]: ...
+
+def _(pair: tuple[GradualReset[int], int | str]) -> str:
+    match pair:
+        case (_, int()):
+            return "matched"
+        case _:
             reveal_type(pair[1])  # revealed: int | str
             return pair[1]  # error: [invalid-return-type]
 ```
@@ -3562,6 +3573,20 @@ def _(x: tuple[Recursive[int], int]) -> None:
             pass
         case _:
             reveal_type(x)  # revealed: tuple[Recursive[int], int]
+```
+
+The same applies when a method's return type keeps nesting another `list`:
+
+```py
+class RecursiveMethod[T](Protocol):
+    def method(self) -> RecursiveMethod[list[T]]: ...
+
+def _(x: tuple[RecursiveMethod[int], int]) -> None:
+    match x:
+        case (_, 1):
+            pass
+        case _:
+            reveal_type(x)  # revealed: tuple[RecursiveMethod[int], int]
 ```
 
 A `TypedDict` whose recursive field keeps nesting another `list` has the same behavior:
