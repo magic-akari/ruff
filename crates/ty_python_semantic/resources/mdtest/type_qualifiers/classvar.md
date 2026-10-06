@@ -397,6 +397,118 @@ def outer[T]():
         function: ClassVar[TypeOf[callback]]
 ```
 
+## Generic property accessors
+
+A property's getter and setter bind their own type parameters, just like other methods. Those
+parameters do not make the protocol invalid in `ClassVar`.
+
+```toml
+[environment]
+python-version = "3.12"
+```
+
+```py
+from typing import ClassVar, Protocol, TypeVar
+
+class GenericProperties(Protocol):
+    @property
+    def getter[T](self) -> tuple[T, T]: ...
+    @property
+    def setter(self) -> object: ...
+    @setter.setter
+    def setter[T](self, value: tuple[T, T]) -> None: ...
+
+class Holder:
+    value: ClassVar[GenericProperties]  # no diagnostic
+```
+
+The same applies to accessors that use legacy type variables.
+
+```py
+T = TypeVar("T")
+
+class LegacyProperties(Protocol):
+    @property
+    def getter(self) -> tuple[T, T]: ...
+    @property
+    def setter(self) -> object: ...
+    @setter.setter
+    def setter(self, value: tuple[T, T]) -> None: ...
+
+class LegacyHolder:
+    value: ClassVar[LegacyProperties]  # no diagnostic
+```
+
+## Captured type variables in property accessors
+
+An accessor's own type parameters do not bind variables captured from an enclosing function.
+
+```toml
+[environment]
+python-version = "3.12"
+```
+
+```py
+from typing import ClassVar, Protocol, TypeVar
+
+def outer[T]():
+    class Getter(Protocol):
+        @property
+        def value[U](self) -> tuple[U, T]: ...
+
+    class Setter(Protocol):
+        @property
+        def value(self) -> object: ...
+        @value.setter
+        def value[U](self, value: tuple[U, T]) -> None: ...
+
+    class Holder:
+        # error: [invalid-type-form] "`ClassVar` cannot contain type variables"
+        getter: ClassVar[Getter]
+        # error: [invalid-type-form] "`ClassVar` cannot contain type variables"
+        setter: ClassVar[Setter]
+```
+
+Legacy accessors also retain the distinction between their own type variables and captured
+variables.
+
+```py
+T = TypeVar("T")
+U = TypeVar("U")
+
+def legacy_outer(value: T):
+    class Getter(Protocol):
+        @property
+        def value(self) -> tuple[U, T]: ...
+
+    class Setter(Protocol):
+        @property
+        def value(self) -> object: ...
+        @value.setter
+        def value(self, value: tuple[U, T]) -> None: ...
+
+    class Holder:
+        # error: [invalid-type-form] "`ClassVar` cannot contain type variables"
+        getter: ClassVar[Getter]
+        # error: [invalid-type-form] "`ClassVar` cannot contain type variables"
+        setter: ClassVar[Setter]
+```
+
+Only the getter's return type and the setter's value type are exposed by a property. Captures in
+optional extra parameters do not affect its use in `ClassVar`.
+
+```py
+def extra_parameters[T]():
+    class Property(Protocol):
+        @property
+        def value(self, fallback: T | None = None) -> int: ...
+        @value.setter
+        def value(self, value: int, fallback: T | None = None) -> None: ...
+
+    class Holder:
+        value: ClassVar[Property]  # no diagnostic
+```
+
 ## Captured type variables in structural types
 
 Local protocols and `TypedDict`s can capture an enclosing type variable. `ClassVar` rejects these

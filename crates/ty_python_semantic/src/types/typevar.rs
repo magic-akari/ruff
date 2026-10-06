@@ -27,6 +27,7 @@ use crate::{
         generics::walk_specialization_types,
         protocol_class::walk_protocol_instance_interface,
         tuple::Tuple,
+        typed_dict::walk_typed_dict_fields,
         variance::VarianceInferable,
         visitor::{
             self, TypeCollector, TypeKind, TypeVisitor, walk_non_atomic_type,
@@ -156,7 +157,7 @@ impl<'db> Type<'db> {
 ///
 /// The search stops at growing recursive alias references. It can miss occurrences that are
 /// exposed only by subsequent specializations, but never treats an incomplete search as a match.
-pub(super) fn find_free_typevar<'db, T: Copy>(
+fn find_free_typevar<'db, T: Copy>(
     db: &'db dyn Db,
     env: &ProgramEnvironment<'db>,
     ty: Type<'db>,
@@ -233,6 +234,22 @@ impl<'db, T: Copy> TypeVisitor<'db> for FreeTypeVarVisitor<'_, 'db, T> {
         }
     }
 
+    fn visit_type_in_callable(&self, db: &'db dyn Db, ty: Type<'db>, callable: Type<'db>) {
+        let context_count = self.bound_contexts.borrow().len();
+        // A property can combine several overload annotations into one type. Retain all of
+        // their binders while visiting the normalized type, without visiting unrelated parameters.
+        if let Some(callables) = callable.try_upcast_to_callable(db, self.env) {
+            self.bound_contexts.borrow_mut().extend(
+                callables
+                    .iter()
+                    .flat_map(|callable| callable.signatures(db).iter())
+                    .filter_map(|signature| signature.generic_context),
+            );
+        }
+        self.visit_type(db, ty);
+        self.bound_contexts.borrow_mut().truncate(context_count);
+    }
+
     fn visit_type_var_type(&self, _db: &'db dyn Db, _typevar: TypeVarInstance<'db>) {}
 
     fn visit_function_type(&self, db: &'db dyn Db, function: FunctionType<'db>) {
@@ -292,14 +309,7 @@ impl<'db, T: Copy> TypeVisitor<'db> for FreeTypeVarVisitor<'_, 'db, T> {
         if let Some(class) = typed_dict.defining_class() {
             self.visit_type(db, class.into());
         }
-        let visit = || {
-            for field in typed_dict.items(db).values() {
-                self.visit_type(db, field.declared_ty);
-            }
-            if let Some(extra_items) = typed_dict.explicit_extra_items(db) {
-                self.visit_type(db, extra_items.declared_ty);
-            }
-        };
+        let visit = || walk_typed_dict_fields(db, typed_dict, self);
         if let Some(definition) = typed_dict.definition(db) {
             self.active_definitions.visit(&definition, || {}, visit);
         } else {
