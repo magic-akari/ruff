@@ -172,22 +172,68 @@ class D[T]:
     y: ClassVar[dict[str, T]]
 ```
 
-We do not yet reject type variables inside aliases. An unused alias argument is harmless, but an
-argument exposed by the alias's value should be rejected:
+## Type variables inside aliases
+
+An alias does not hide a type variable from `ClassVar` validation. Arguments that the alias discards
+are allowed, including arguments removed when the alias's value simplifies to a concrete type.
+
+```toml
+[environment]
+python-version = "3.12"
+```
 
 ```py
-type Alias[T] = T
+from typing import ClassVar, Generic, TypeVar
+
+type DirectAlias[T] = T
+type Alias[T] = list[T]
 type Ignored[T] = int
+type Either[T, U] = T | U
+
+class Holder[T]:
+    # error: [invalid-type-form] "`ClassVar` cannot contain type variables"
+    direct: ClassVar[DirectAlias[T]]
+    # error: [invalid-type-form] "`ClassVar` cannot contain type variables"
+    exposed: ClassVar[Alias[T]]
+    ignored: ClassVar[Ignored[T]]
+    simplified: ClassVar[Either[object, T]]
+
+T = TypeVar("T")
+
+class LegacyHolder(Generic[T]):
+    # error: [invalid-type-form] "`ClassVar` cannot contain type variables"
+    exposed: ClassVar[Alias[T]]
+    ignored: ClassVar[Ignored[T]]
+    simplified: ClassVar[Either[object, T]]
+```
+
+Recursive aliases can expose an argument only after passing it to a different parameter. Parameters
+that remain unused throughout the recursion are allowed.
+
+```py
+type Shift[A, B] = A | list[Shift[B, int]]
+type RecursiveIgnored[A, B] = B | list[RecursiveIgnored[A, int]]
+
+class RecursiveHolder[T]:
+    # error: [invalid-type-form] "`ClassVar` cannot contain type variables"
+    exposed: ClassVar[Shift[int, T]]
+    ignored: ClassVar[RecursiveIgnored[T, int]]
+    simplified: ClassVar[Shift[object, T]]
+```
+
+The search also preserves simplification inside growing recursive aliases. It does not yet detect an
+occurrence that becomes visible only after a growing recursive reference.
+
+```py
+type Absorbed[A, B] = tuple[A | B, Absorbed[A, list[B]]]
+type GrowingShift[A, B] = tuple[A, GrowingShift[B, list[A]]]
 type Recursive[T] = list[Recursive[list[T]]]
 
-class Aliased[T]:
-    # TODO: Reject the type variable exposed by the alias.
-    generic: ClassVar[Alias[T]]
-
-    concrete: ClassVar[Ignored[T]]
-
-    # TODO: Reject the type variable inside the recursive alias.
+class GrowingHolder[T]:
+    simplified: ClassVar[Absorbed[object, T]]
     recursive: ClassVar[Recursive[T]]
+    # TODO: Reject T when it becomes the first argument of GrowingShift.
+    exposed: ClassVar[GrowingShift[int, T]]
 ```
 
 ## `ClassVar` can contain `Self`
@@ -219,8 +265,7 @@ class Sub(Base): ...
 reveal_type(Sub.all_instances)  # revealed: list[Sub]
 ```
 
-`Self` should also be valid in a generic class, but type parameters in its bound currently produce a
-false positive:
+The type parameters in `Self`'s bound do not make `Self` invalid in a generic class.
 
 ```py
 from typing import Generic, TypeVar
@@ -228,10 +273,7 @@ from typing import Generic, TypeVar
 U = TypeVar("U")
 
 class GenericBase(Generic[U]):
-    # TODO: Do not reject type variables in `Self`'s bound.
-    # error: [invalid-type-form] "`ClassVar` cannot contain type variables"
     direct: ClassVar[Self]
-    # error: [invalid-type-form] "`ClassVar` cannot contain type variables"
     nested: ClassVar[list[Self]]
 ```
 
@@ -282,10 +324,7 @@ def store_any(cls: type[Any], value: Any) -> None:
     reveal_type(cls.count)  # revealed: Any
 ```
 
-## Protocols with generic methods
-
-A protocol's generic methods bind their own type parameters, so the protocol is valid in a
-`ClassVar` annotation:
+## `Self` in PEP 695 generic classes
 
 ```toml
 [environment]
@@ -293,19 +332,49 @@ python-version = "3.12"
 ```
 
 ```py
-from typing import ClassVar, Protocol
+from typing import ClassVar, Self
+
+class GenericBase[U]:
+    direct: ClassVar[Self]
+    nested: ClassVar[list[Self]]
+```
+
+## Generic callable signatures
+
+Type variables bound by a callable's own signature are allowed in `ClassVar`. `CallableTypeOf`
+preserves a function's generic signature without specializing it.
+
+```toml
+[environment]
+python-version = "3.12"
+```
+
+```py
+from typing import ClassVar, Protocol, TypeVar
+from ty_extensions._internal import CallableTypeOf, TypeOf
+
+def identity[T](value: T) -> T:
+    return value
+
+U = TypeVar("U")
+
+def legacy_identity(value: U) -> U:
+    return value
 
 class Callback(Protocol):
     def __call__[T](self, value: T) -> T: ...
 
 class Holder:
-    callback: ClassVar[Callback]
+    callback: ClassVar[CallableTypeOf[identity]]
+    legacy_callback: ClassVar[CallableTypeOf[legacy_identity]]
+    protocol: ClassVar[Callback]
+    function: ClassVar[TypeOf[identity]]
 ```
 
-This remains valid when the protocol is defined inside a function:
+A protocol's generic method also binds its own parameter when the protocol is local to a function.
 
 ```py
-def _() -> None:
+def outer():
     class Callback(Protocol):
         def __call__[T](self, value: T) -> T: ...
 
@@ -313,60 +382,25 @@ def _() -> None:
         callback: ClassVar[Callback]
 ```
 
-## Generic callable signatures
-
-A generic callable also binds its own type parameters, but we currently reject them in `ClassVar`
-annotations. `CallableTypeOf` preserves the generic signature without specializing it:
-
-```toml
-[environment]
-python-version = "3.12"
-```
+A callable can still capture a type variable from an enclosing scope. Its own type parameters do not
+bind that captured variable.
 
 ```py
-from typing import ClassVar
-from ty_extensions._internal import CallableTypeOf
+def outer[T]():
+    def callback[U](value: T, other: U) -> U:
+        return other
 
-def identity[T](value: T) -> T:
-    return value
-
-class Holder:
-    # TODO: Permit type variables bound by the callable's own signature.
-    # error: [invalid-type-form] "`ClassVar` cannot contain type variables"
-    callback: ClassVar[CallableTypeOf[identity]]
+    class Holder:
+        # error: [invalid-type-form] "`ClassVar` cannot contain type variables"
+        value: ClassVar[CallableTypeOf[callback]]
+        # error: [invalid-type-form] "`ClassVar` cannot contain type variables"
+        function: ClassVar[TypeOf[callback]]
 ```
 
 ## Captured type variables in structural types
 
-A local protocol or `TypedDict` can capture an outer type variable. These captures are not yet
-diagnosed in `ClassVar` annotations:
-
-```toml
-[environment]
-python-version = "3.12"
-```
-
-```py
-from typing import ClassVar, Protocol, TypedDict
-
-def _[T]() -> None:
-    class Captured(Protocol):
-        value: T
-
-    class Payload(TypedDict):
-        value: T
-
-    class Holder:
-        # TODO: Reject the captured type variable in the protocol member.
-        protocol: ClassVar[Captured]
-        # TODO: Reject the captured type variable in the TypedDict field.
-        payload: ClassVar[Payload]
-```
-
-## Recursive structural types
-
-Concrete recursive protocols and `TypedDict`s are also valid `ClassVar` types. This includes members
-whose recursive references keep changing specialization:
+Local protocols and `TypedDict`s can capture an enclosing type variable. `ClassVar` rejects these
+captures, including those exposed by a protocol method.
 
 ```toml
 [environment]
@@ -378,7 +412,55 @@ from __future__ import annotations
 
 from typing import ClassVar, Protocol, TypedDict
 
-def _() -> None:
+def outer[T]():
+    class Captured(Protocol):
+        value: T
+
+    class Callback(Protocol):
+        def method[U](self, value: U) -> tuple[T, U]: ...
+
+    class Payload(TypedDict):
+        value: T
+
+    class Holder:
+        # error: [invalid-type-form] "`ClassVar` cannot contain type variables"
+        attribute: ClassVar[Captured]
+        # error: [invalid-type-form] "`ClassVar` cannot contain type variables"
+        method: ClassVar[Callback]
+        # error: [invalid-type-form] "`ClassVar` cannot contain type variables"
+        payload: ClassVar[Payload]
+```
+
+## Recursive structural types
+
+Concrete recursive structural types remain valid. A protocol's implicit receiver and a method's own
+type parameters do not introduce a free type variable.
+
+```toml
+[environment]
+python-version = "3.12"
+```
+
+```py
+from __future__ import annotations
+
+from typing import ClassVar, Protocol, TypedDict
+
+class Recursive[T](Protocol):
+    def method[U](self, value: U) -> tuple[Recursive[int], U]: ...
+
+class RecursivePayload(TypedDict):
+    next: RecursivePayload
+
+class Holder:
+    protocol: ClassVar[Recursive[int]]
+    payload: ClassVar[RecursivePayload]
+```
+
+This also holds when the recursive references keep changing specialization.
+
+```py
+def outer():
     class Recursive[T](Protocol):
         next: Recursive[list[T]]
 
