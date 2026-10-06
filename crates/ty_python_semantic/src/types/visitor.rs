@@ -45,6 +45,15 @@ pub(crate) trait TypeVisitor<'db> {
 
     fn visit_type(&self, db: &'db dyn Db, ty: Type<'db>);
 
+    fn visit_signature(&self, db: &'db dyn Db, signature: &super::Signature<'db>) {
+        super::walk_signature(db, signature, self);
+    }
+
+    /// Visit an exposed parameter or return type while retaining its callable's binders.
+    fn visit_type_in_callable(&self, db: &'db dyn Db, ty: Type<'db>, _callable: Type<'db>) {
+        self.visit_type(db, ty);
+    }
+
     fn visit_union_type(&self, db: &'db dyn Db, union: UnionType<'db>) {
         walk_union(db, union, self);
     }

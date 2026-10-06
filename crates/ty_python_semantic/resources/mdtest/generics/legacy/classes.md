@@ -3312,5 +3312,70 @@ def check(pair: tuple[Node[str] | Record[str], int | str]) -> str:
             return pair[1]  # no diagnostic
 ```
 
+## Generic methods in finite recursive protocols
+
+A method's own type variables do not make the enclosing protocol's recursive specializations grow.
+The protocol remains fully static, so a negative tuple pattern narrows a neighboring element.
+
+```toml
+[environment]
+python-version = "3.10"
+```
+
+```py
+from __future__ import annotations
+
+from typing import Protocol, TypeVar
+
+T_co = TypeVar("T_co", covariant=True)
+U = TypeVar("U")
+
+class Node(Protocol[T_co]):
+    def next(self) -> Node[int]: ...
+    def identity(self, value: U) -> U: ...
+
+def check(pair: tuple[Node[str], int | str]) -> str:
+    match pair:
+        case (_, int()):
+            return "matched"
+        case _:
+            reveal_type(pair[1])  # revealed: str
+            return pair[1]  # no diagnostic
+```
+
+## Generic property setters in finite recursive protocols
+
+A property setter's type variables likewise belong to the setter, so they do not prevent narrowing
+beside a finite recursive protocol.
+
+```toml
+[environment]
+python-version = "3.10"
+```
+
+```py
+from __future__ import annotations
+
+from typing import Protocol, TypeVar
+
+T_co = TypeVar("T_co", covariant=True)
+U = TypeVar("U")
+
+class Node(Protocol[T_co]):
+    def next(self) -> Node[int]: ...
+    @property
+    def value(self) -> object: ...
+    @value.setter
+    def value(self, value: tuple[U, U]) -> None: ...
+
+def check(pair: tuple[Node[str], int | str]) -> str:
+    match pair:
+        case (_, int()):
+            return "matched"
+        case _:
+            reveal_type(pair[1])  # revealed: str
+            return pair[1]  # no diagnostic
+```
+
 [crtp]: https://en.wikipedia.org/wiki/Curiously_recurring_template_pattern
 [f-bound]: https://en.wikipedia.org/wiki/Bounded_quantification#F-bounded_quantification

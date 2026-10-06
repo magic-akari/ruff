@@ -38,10 +38,12 @@ use crate::types::newtype::{NewType, walk_newtype_base};
 use crate::types::protocol_class::{ProtocolInterfaceView, walk_protocol_instance_interface};
 use crate::types::typed_dict::walk_typed_dict_fields;
 use crate::types::typevar::{TypeVarInstance, walk_type_var_attributes, walk_type_var_type};
-use crate::types::visitor::{TypeCollector, TypeVisitor, walk_type_with_recursion_guard};
+use crate::types::visitor::{
+    TypeCollector, TypeKind, TypeVisitor, walk_non_atomic_type, walk_type_with_recursion_guard,
+};
 use crate::types::{
     BoundTypeVarIdentity, BoundTypeVarInstance, KnownInstanceType, ProtocolInstanceType,
-    RecursiveType, StaticClassLiteral, Type, TypeAliasType, TypedDictType,
+    RecursiveType, Signature, StaticClassLiteral, Type, TypeAliasType, TypedDictType,
 };
 use crate::{Db, ProgramEnvironment};
 
@@ -374,7 +376,8 @@ struct SpecializationFlowVisitor<'db> {
     source_parameters: FxHashSet<BoundTypeVarIdentity<'db>>,
     protocol_members: ProtocolMembers,
     env: ProgramEnvironment<'db>,
-    visited_types: TypeCollector<'db>,
+    bound_contexts: RefCell<Vec<GenericContext<'db>>>,
+    active_types: ActiveRecursionDetector<Type<'db>>,
     edges: RefCell<Vec<FlowEdge<'db>>>,
     referenced_definitions: RefCell<Vec<RecursiveDefinition<'db>>>,
     inconclusive: Cell<bool>,
@@ -725,7 +728,8 @@ impl<'db> SpecializationFlowVisitor<'db> {
             source_parameters: source.source_parameters(db)?,
             protocol_members,
             env: ProgramEnvironment::from_definition(source.definition(db)),
-            visited_types: TypeCollector::default(),
+            bound_contexts: RefCell::default(),
+            active_types: ActiveRecursionDetector::default(),
             edges: RefCell::default(),
             referenced_definitions: RefCell::default(),
             inconclusive: Cell::default(),
@@ -826,7 +830,13 @@ impl<'db> TypeVisitor<'db> for SpecializationFlowVisitor<'db> {
     fn visit_type(&self, db: &'db dyn Db, ty: Type<'db>) {
         if let Type::TypeVar(typevar) = ty {
             let identity = RecursiveDefinition::parameter_identity(db, typevar);
-            if !self.source_parameters.contains(&identity) {
+            if !self.source_parameters.contains(&identity)
+                && !self
+                    .bound_contexts
+                    .borrow()
+                    .iter()
+                    .any(|context| context.contains(db, identity))
+            {
                 // Nested definitions can capture a type variable from an outer generic scope.
                 // Specialization does not yet retain the parent mapping needed to model it.
                 self.inconclusive.set(true);
@@ -841,7 +851,36 @@ impl<'db> TypeVisitor<'db> for SpecializationFlowVisitor<'db> {
             return;
         }
 
-        walk_type_with_recursion_guard(db, ty, self, &self.visited_types);
+        // The same type can appear under different callable binders. Only skip active visits,
+        // so a completed visit under one binder does not hide a capture under another.
+        if let TypeKind::NonAtomic(kind) = TypeKind::from(ty) {
+            self.active_types
+                .visit(&ty, || {}, || walk_non_atomic_type(db, kind, self));
+        }
+    }
+
+    fn visit_signature(&self, db: &'db dyn Db, signature: &Signature<'db>) {
+        if let Some(context) = signature.generic_context {
+            self.bound_contexts.borrow_mut().push(context);
+        }
+        super::walk_signature(db, signature, self);
+        if signature.generic_context.is_some() {
+            self.bound_contexts.borrow_mut().pop();
+        }
+    }
+
+    fn visit_type_in_callable(&self, db: &'db dyn Db, ty: Type<'db>, callable: Type<'db>) {
+        let context_count = self.bound_contexts.borrow().len();
+        if let Some(callables) = callable.try_upcast_to_callable(db, &self.env) {
+            self.bound_contexts.borrow_mut().extend(
+                callables
+                    .iter()
+                    .flat_map(|callable| callable.signatures(db).iter())
+                    .filter_map(|signature| signature.generic_context),
+            );
+        }
+        self.visit_type(db, ty);
+        self.bound_contexts.borrow_mut().truncate(context_count);
     }
 
     fn visit_bound_type_var_type(&self, db: &'db dyn Db, bound_typevar: BoundTypeVarInstance<'db>) {

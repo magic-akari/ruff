@@ -32,7 +32,7 @@ use crate::{
         diagnostic::{INVALID_PROTOCOL, report_undeclared_protocol_member},
         generics::Specialization,
         member::class_member,
-        signatures::{CallableSignature, walk_signature},
+        signatures::CallableSignature,
         variance::infer_protocol_variance,
     },
 };
@@ -728,9 +728,9 @@ pub(super) fn walk_protocol_instance_member<'db, V: super::visitor::TypeVisitor<
                         Some(runtime_type),
                         Some(receiver_ty),
                     );
-                    walk_signature(db, &signature, visitor);
+                    visitor.visit_signature(db, &signature);
                 } else {
-                    walk_signature(db, signature, visitor);
+                    visitor.visit_signature(db, signature);
                 }
             }
         }
@@ -1529,7 +1529,14 @@ fn walk_protocol_member_access<'db, V: super::visitor::TypeVisitor<'db> + ?Sized
     let read_ty = access
         .read()
         .and_then(|read| read.result_type(db, env, self_type));
-    if let Some(read_ty) = read_ty {
+    if let Some(read_ty) = read_ty
+        && let ProtocolMemberKind::Property {
+            read: Some(ProtocolPropertyType::PropertyGetter(getter)),
+            ..
+        } = access.declaration.kind
+    {
+        visitor.visit_type_in_callable(db, read_ty, getter);
+    } else if let Some(read_ty) = read_ty {
         visitor.visit_type(db, read_ty);
     } else if self_type.is_none()
         && access.mode == ProtocolMemberAccessMode::Instance
@@ -1549,7 +1556,12 @@ fn walk_protocol_member_access<'db, V: super::visitor::TypeVisitor<'db> + ?Sized
     let write_ty = requirement
         .as_ref()
         .and_then(ProtocolMemberWriteRequirement::accepted_type);
-    if let Some(write_ty) = write_ty {
+    if let Some(write_ty) = write_ty
+        && let ProtocolMemberWrite::Type(ProtocolPropertyType::PropertySetter(setter)) =
+            write.declaration
+    {
+        visitor.visit_type_in_callable(db, write_ty, setter);
+    } else if let Some(write_ty) = write_ty {
         visitor.visit_type(db, write_ty);
     } else if self_type.is_none()
         && let Some(domain) = write.declaration.domain()

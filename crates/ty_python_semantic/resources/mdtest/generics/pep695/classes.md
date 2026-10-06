@@ -2456,5 +2456,54 @@ def check(pair: tuple[Node[str] | Record[str], int | str]) -> str:
             return pair[1]  # no diagnostic
 ```
 
+## Generic methods in finite recursive protocols
+
+A method's own type variables do not make the enclosing protocol's recursive specializations grow.
+The protocol remains fully static, so a negative tuple pattern narrows a neighboring element.
+
+```py
+from __future__ import annotations
+
+from typing import Protocol
+
+class Node[T](Protocol):
+    def next(self) -> Node[int]: ...
+    def identity[U](self, value: U) -> U: ...
+
+def check(pair: tuple[Node[str], int | str]) -> str:
+    match pair:
+        case (_, int()):
+            return "matched"
+        case _:
+            reveal_type(pair[1])  # revealed: str
+            return pair[1]  # no diagnostic
+```
+
+## Generic property setters in finite recursive protocols
+
+A property setter's type variables likewise belong to the setter, so they do not prevent narrowing
+beside a finite recursive protocol.
+
+```py
+from __future__ import annotations
+
+from typing import Protocol
+
+class Node[T](Protocol):
+    def next(self) -> Node[int]: ...
+    @property
+    def value(self) -> object: ...
+    @value.setter
+    def value[U](self, value: tuple[U, U]) -> None: ...
+
+def check(pair: tuple[Node[str], int | str]) -> str:
+    match pair:
+        case (_, int()):
+            return "matched"
+        case _:
+            reveal_type(pair[1])  # revealed: str
+            return pair[1]  # no diagnostic
+```
+
 [crtp]: https://en.wikipedia.org/wiki/Curiously_recurring_template_pattern
 [f-bound]: https://en.wikipedia.org/wiki/Bounded_quantification#F-bounded_quantification
