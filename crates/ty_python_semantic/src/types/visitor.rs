@@ -18,12 +18,12 @@ use crate::types::{
     class::walk_generic_alias,
     cyclic::{ActiveRecursionDetector, TypeIdentity},
     function::{FunctionType, walk_function_type},
-    generics::walk_specialization_types,
+    generics::{GenericContext, walk_specialization_types},
     instance::{walk_nominal_instance_type, walk_protocol_instance_type},
     known_instance::walk_known_instance_type,
     method::{walk_bound_method_type, walk_method_wrapper_type},
     newtype::{NewType, walk_newtype_base, walk_newtype_instance_type},
-    protocol_class::{walk_protocol_instance_interface, walk_protocol_interface},
+    protocol_class::walk_protocol_instance_interface,
     set_theoretic::{walk_intersection_type, walk_union},
     subclass_of::walk_subclass_of_type,
     type_alias::walk_type_alias_arguments,
@@ -689,19 +689,21 @@ fn dynamic_content_impl<'db>(
     visitor.content.get()
 }
 
-/// Search for type-variable occurrences, including in lazy attributes.
+/// Whether a type may depend on variables from a generic context, including in lazy attributes.
 ///
-/// This includes variables bound by nested callables, not just free variables. Return `true` if
-/// recursive specialization prevents a complete search.
-pub(super) fn any_over_typevar_including_lazy_attributes<'db>(
+/// Recursive definitions can keep changing their specialization without introducing any of the
+/// variables we are looking for. After visiting a definition's body, inspect the arguments of a
+/// recursive reference instead of expanding the body again. This can overestimate dependencies
+/// carried in unused recursive arguments, but a recursion cutoff alone is not a dependency.
+pub(super) fn may_contain_typevar_from<'db>(
     db: &'db dyn Db,
     env: &ProgramEnvironment<'db>,
     ty: Type<'db>,
-    query: impl Fn(Type<'db>) -> bool,
+    generic_context: GenericContext<'db>,
 ) -> bool {
     struct TypeVarOccurrenceVisitor<'a, 'db> {
         env: &'a ProgramEnvironment<'db>,
-        query: &'a dyn Fn(Type<'db>) -> bool,
+        generic_context: GenericContext<'db>,
         visited_types: TypeCollector<'db>,
         active_types: ActiveRecursionDetector<TypeIdentity<'db>>,
         active_protocols: ActiveRecursionDetector<Definition<'db>>,
@@ -709,15 +711,21 @@ pub(super) fn any_over_typevar_including_lazy_attributes<'db>(
     }
 
     impl<'db> TypeVarOccurrenceVisitor<'_, 'db> {
-        fn visit_guarded(&self, db: &'db dyn Db, ty: Type<'db>, visit: impl FnOnce()) {
+        fn visit_guarded(
+            &self,
+            db: &'db dyn Db,
+            ty: Type<'db>,
+            visit_arguments: impl FnOnce(),
+            visit: impl FnOnce(),
+        ) {
             let identity = ty.to_type_identity(db);
             self.active_types.visit(
                 &identity,
                 || {
-                    // A coarsened identity can hide occurrences in a different specialization.
-                    // An exact cycle adds no new occurrences.
+                    // An exact cycle adds no new dependencies. A coarsened identity can hide
+                    // a different specialization, whose arguments still need inspecting.
                     if !matches!(identity, TypeIdentity::Other(_)) {
-                        self.found.set(true);
+                        visit_arguments();
                     }
                 },
                 visit,
@@ -735,7 +743,8 @@ pub(super) fn any_over_typevar_including_lazy_attributes<'db>(
                 return;
             }
 
-            if (self.query)(ty) {
+            if matches!(ty, Type::TypeVar(typevar) if self.generic_context.contains(db, typevar.identity(db)))
+            {
                 self.found.set(true);
                 return;
             }
@@ -744,15 +753,25 @@ pub(super) fn any_over_typevar_including_lazy_attributes<'db>(
         }
 
         fn visit_type_alias_type(&self, db: &'db dyn Db, alias: TypeAliasType<'db>) {
-            self.visit_guarded(db, Type::TypeAlias(alias), || {
-                self.visit_type(db, alias.value_type(db));
-            });
+            self.visit_guarded(
+                db,
+                Type::TypeAlias(alias),
+                || walk_type_alias_arguments(db, alias, self),
+                || self.visit_type(db, alias.value_type(db)),
+            );
         }
 
         fn visit_recursive_type(&self, db: &'db dyn Db, recursive: RecursiveType<'db>) {
-            self.visit_guarded(db, Type::Recursive(recursive), || {
-                self.visit_type(db, recursive.unfold(db, self.env).into_type());
-            });
+            self.visit_guarded(
+                db,
+                Type::Recursive(recursive),
+                || {
+                    if let Some(arguments) = recursive.arguments(db) {
+                        walk_specialization_types(db, arguments, self);
+                    }
+                },
+                || self.visit_type(db, recursive.unfold(db, self.env).into_type()),
+            );
         }
 
         fn visit_protocol_instance_type(
@@ -761,25 +780,28 @@ pub(super) fn any_over_typevar_including_lazy_attributes<'db>(
             protocol: ProtocolInstanceType<'db>,
         ) {
             let ty = Type::ProtocolInstance(protocol);
-            let visit_members = || walk_protocol_interface(db, protocol.interface(db), self);
+            let visit_members = || {
+                walk_protocol_instance_interface(db, protocol.interface(db), ty, self);
+            };
 
             let Some(definition) = protocol
                 .class_origin(db)
                 .and_then(|class| class.definition(db))
             else {
-                self.visit_guarded(db, ty, visit_members);
+                self.visit_guarded(db, ty, || {}, visit_members);
                 return;
             };
 
             self.active_protocols.visit(
                 &definition,
                 || {
-                    // A repeated definition can come from finite nesting (`P[P[int]]`) or
-                    // an implicit receiver's bound (`P[T]`). Check for growth before stopping.
-                    if ty.contains_growing_type(db, self.env) {
-                        self.found.set(true);
-                    } else {
-                        visit_members();
+                    // The body has already exposed any captured variables. Only argument
+                    // substitution can introduce further dependencies on this recursive edge.
+                    if let Some((_, Some(specialization))) = protocol
+                        .class_origin(db)
+                        .and_then(|class| class.static_class_literal(db))
+                    {
+                        walk_specialization_types(db, specialization, self);
                     }
                 },
                 visit_members,
@@ -787,24 +809,35 @@ pub(super) fn any_over_typevar_including_lazy_attributes<'db>(
         }
 
         fn visit_typed_dict_type(&self, db: &'db dyn Db, typed_dict: TypedDictType<'db>) {
-            self.visit_guarded(db, Type::TypedDict(typed_dict), || {
-                if let Some(class) = typed_dict.defining_class() {
-                    self.visit_type(db, class.into());
-                }
-                walk_typed_dict_fields(db, typed_dict, self);
-            });
+            if let Some(class) = typed_dict.defining_class() {
+                self.visit_type(db, class.into());
+            }
+            self.visit_guarded(
+                db,
+                Type::TypedDict(typed_dict),
+                || {},
+                || {
+                    walk_typed_dict_fields(db, typed_dict, self);
+                },
+            );
         }
 
         fn visit_newtype_instance_type(&self, db: &'db dyn Db, newtype: NewType<'db>) {
-            self.visit_guarded(db, Type::NewTypeInstance(newtype), || {
-                walk_newtype_base(db, newtype, self);
-            });
+            self.visit_guarded(
+                db,
+                Type::NewTypeInstance(newtype),
+                || {},
+                || {
+                    walk_newtype_base(db, newtype, self);
+                },
+            );
         }
 
         fn visit_type_var_type(&self, db: &'db dyn Db, typevar: TypeVarInstance<'db>) {
             self.visit_guarded(
                 db,
                 Type::KnownInstance(KnownInstanceType::TypeVar(typevar)),
+                || {},
                 || walk_type_var_attributes(db, typevar, self),
             );
         }
@@ -812,7 +845,7 @@ pub(super) fn any_over_typevar_including_lazy_attributes<'db>(
 
     let visitor = TypeVarOccurrenceVisitor {
         env,
-        query: &query,
+        generic_context,
         visited_types: TypeCollector::default(),
         active_types: ActiveRecursionDetector::default(),
         active_protocols: ActiveRecursionDetector::default(),

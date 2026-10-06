@@ -3652,9 +3652,8 @@ x2: HasValue = IntAttribute()  # error: [invalid-assignment]
 
 ### Setter value types with finite protocol recursion
 
-`P[int]` does not depend on the setter's `U`, so a matching property setter should satisfy the
-writable member. We currently fail to recognize this subtype relation because the recursion guard
-treats the fixed `P[int]` return type as potentially growing:
+`P[int]` does not depend on the setter's `U`, so a matching property setter satisfies the writable
+member even though `P`'s method returns another instance of the protocol:
 
 ```toml
 [environment]
@@ -3690,19 +3689,91 @@ class Implementation:
     @value.setter
     def value(self, value: P[int]) -> None: ...
 
-# TODO: Recognize the matching property setter as a subtype.
-static_assert(is_subtype_of(Implementation, HasValue))  # error: [static-assert-error]
+static_assert(is_subtype_of(Implementation, HasValue))
 x: HasValue = Implementation()
 ```
 
-An `int` attribute cannot accept `P[int]` values, but we currently miss this diagnostic too:
+An `int` attribute cannot accept `P[int]` values:
 
 ```py
 class IntAttribute:
     value: int
 
-# TODO: Reject the incompatible writable attribute.
-y: HasValue = IntAttribute()
+y: HasValue = IntAttribute()  # error: [invalid-assignment]
+```
+
+### Setter value types with permuted protocol arguments
+
+Recursion through different specializations remains independent of the setter's type parameter.
+`Swapped[int, str]` alternates with `Swapped[str, int]`, and a setter accepting that type satisfies
+the writable member:
+
+```toml
+[environment]
+python-version = "3.12"
+```
+
+```py
+from __future__ import annotations
+
+from typing import Protocol
+from ty_extensions import static_assert
+from ty_extensions._internal import is_subtype_of
+
+class Swapped[A, B](Protocol):
+    def value(self) -> A: ...
+    def next(self) -> Swapped[B, A]: ...
+
+class Descriptor:
+    def __init__(self, getter: object) -> None: ...
+    def __get__(self, instance: object, owner: type | None = None) -> object:
+        return object()
+
+    def __set__[U](self, instance: object, value: Swapped[int, str]) -> None: ...
+
+class HasValue(Protocol):
+    @Descriptor
+    def value(self) -> object: ...
+
+class Implementation:
+    @property
+    def value(self) -> object:
+        return object()
+
+    @value.setter
+    def value(self, value: Swapped[int, str]) -> None: ...
+
+static_assert(is_subtype_of(Implementation, HasValue))
+
+class IntAttribute:
+    value: int
+
+x: HasValue = IntAttribute()  # error: [invalid-assignment]
+```
+
+The second argument is used after following the recursive reference. A setter whose `U` appears
+there is still generic, and each assignment can infer a different `U`:
+
+```py
+class GenericDescriptor:
+    def __init__(self, getter: object) -> None: ...
+    def __get__(self, instance: object, owner: type | None = None) -> object:
+        return object()
+
+    def __set__[U: int](self, instance: object, value: Swapped[str, U]) -> None: ...
+
+class HasGenericValue(Protocol):
+    @GenericDescriptor
+    def value(self) -> object: ...
+
+from ty_extensions._internal import reveal_protocol_interface
+
+# revealed: {"value": PropertyMember { read: `object`, write: `Unknown` }}
+reveal_protocol_interface(HasGenericValue)
+
+def update(value: HasGenericValue, accepted: Swapped[str, int], rejected: Swapped[str, str]) -> None:
+    value.value = accepted
+    value.value = rejected  # error: [invalid-assignment]
 ```
 
 ### Recursive setter types independent of method type parameters
@@ -3719,6 +3790,8 @@ python-version = "3.12"
 from __future__ import annotations
 
 from typing import Protocol
+from ty_extensions import static_assert
+from ty_extensions._internal import is_subtype_of
 
 class Recursive[T](Protocol):
     next: Recursive[list[T]]
@@ -3737,6 +3810,25 @@ class HasValue(Protocol):
 def _(x: HasValue, value: Recursive[int]) -> None:
     x.value = value
     x.value = 1  # error: [invalid-assignment]
+```
+
+Growing recursion also preserves the writable-member checks when comparing implementations:
+
+```py
+class Implementation:
+    @property
+    def value(self) -> int:
+        return 1
+
+    @value.setter
+    def value(self, value: Recursive[int]) -> None: ...
+
+static_assert(is_subtype_of(Implementation, HasValue))
+
+class IntAttribute:
+    value: int
+
+x: HasValue = IntAttribute()  # error: [invalid-assignment]
 ```
 
 A `TypedDict` can likewise recur without referring to the setter's `U`:

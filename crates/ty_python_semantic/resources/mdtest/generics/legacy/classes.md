@@ -270,9 +270,7 @@ def _(value: P[P[int]]) -> None:
 
 ## Finite recursive protocols as generic arguments
 
-`Generic` and `Protocol` should reject protocol instances even when their methods are recursive. We
-currently miss these errors because the recursion guard treats the method as potentially growing,
-although it always returns `P[int]`:
+`Generic` and `Protocol` reject protocol instances even when their methods are recursive:
 
 ```toml
 [environment]
@@ -288,27 +286,25 @@ class P[T](Protocol):
     def method(self) -> P[int]: ...
 
 def _(value: P[int]) -> None:
-    # TODO: Reject protocol instances as `Generic` and `Protocol` arguments.
-    reveal_type(Generic[value])  # revealed: @Todo(ParamSpecs and TypeVarTuples)
-    reveal_type(Protocol[value])  # revealed: @Todo(ParamSpecs and TypeVarTuples)
-    class C(Generic[value]): ...
-    class D(Protocol[value]): ...
+    Generic[value]  # error: [invalid-argument-type]
+    Protocol[value]  # error: [invalid-argument-type]
+    class C(Generic[value]): ...  # error: [invalid-argument-type]
+    class D(Protocol[value]): ...  # error: [invalid-argument-type]
 ```
 
-The same limitation applies to other starting specializations, including an unused `TypeVarTuple`
+The same restriction applies to other starting specializations, including an unused `TypeVarTuple`
 argument:
 
 ```py
 def _(value: P[str], unused: P[TypeVarTuple]) -> None:
-    # TODO: Reject protocol instances as `Generic` and `Protocol` arguments.
-    reveal_type(Generic[value])  # revealed: @Todo(ParamSpecs and TypeVarTuples)
-    reveal_type(Protocol[value])  # revealed: @Todo(ParamSpecs and TypeVarTuples)
-    reveal_type(Generic[unused])  # revealed: @Todo(ParamSpecs and TypeVarTuples)
-    reveal_type(Protocol[unused])  # revealed: @Todo(ParamSpecs and TypeVarTuples)
+    Generic[value]  # error: [invalid-argument-type]
+    Protocol[value]  # error: [invalid-argument-type]
+    Generic[unused]  # error: [invalid-argument-type]
+    Protocol[unused]  # error: [invalid-argument-type]
 ```
 
-A property that swaps its type arguments returns to the original specialization after two steps. We
-miss the invalid-argument diagnostics for this finite cycle too:
+A property that swaps its type arguments returns to the original specialization after two steps.
+This finite cycle does not change which arguments are valid:
 
 ```py
 class Swapped[A, B](Protocol):
@@ -316,15 +312,14 @@ class Swapped[A, B](Protocol):
     def next(self) -> Swapped[B, A]: ...
 
 def _(value: Swapped[int, str]) -> None:
-    # TODO: Reject protocol instances as `Generic` and `Protocol` arguments.
-    reveal_type(Generic[value])  # revealed: @Todo(ParamSpecs and TypeVarTuples)
-    reveal_type(Protocol[value])  # revealed: @Todo(ParamSpecs and TypeVarTuples)
+    Generic[value]  # error: [invalid-argument-type]
+    Protocol[value]  # error: [invalid-argument-type]
 ```
 
 ## Runtime `TypeVarTuple` arguments
 
-A list is not a valid argument to `Generic` or `Protocol`, but lists containing runtime
-`TypeVarTuple` objects currently go unchecked:
+A list is not a valid argument to `Generic` or `Protocol`, even when it contains runtime
+`TypeVarTuple` objects:
 
 ```toml
 [environment]
@@ -335,11 +330,11 @@ python-version = "3.12"
 from typing import Generic, Protocol, TypeVarTuple
 
 def _(value: TypeVarTuple) -> None:
-    reveal_type(Generic[[value]])  # revealed: @Todo(ParamSpecs and TypeVarTuples)
-    reveal_type(Protocol[[value]])  # revealed: @Todo(ParamSpecs and TypeVarTuples)
+    Generic[[value]]  # error: [invalid-argument-type]
+    Protocol[[value]]  # error: [invalid-argument-type]
 
-    class GenericBase(Generic[[value]]): ...
-    class ProtocolBase(Protocol[[value]]): ...
+    class GenericBase(Generic[[value]]): ...  # error: [invalid-argument-type]
+    class ProtocolBase(Protocol[[value]]): ...  # error: [invalid-argument-type]
 ```
 
 The `typing_extensions` variant has the same behavior:
@@ -348,12 +343,12 @@ The `typing_extensions` variant has the same behavior:
 from typing_extensions import TypeVarTuple as TypeVarTupleExtensions
 
 def _(value: TypeVarTupleExtensions) -> None:
-    reveal_type(Generic[[value]])  # revealed: @Todo(ParamSpecs and TypeVarTuples)
-    reveal_type(Protocol[[value]])  # revealed: @Todo(ParamSpecs and TypeVarTuples)
+    Generic[[value]]  # error: [invalid-argument-type]
+    Protocol[[value]]  # error: [invalid-argument-type]
 ```
 
-This limitation also applies when an alias, `NewType`, or type-variable bound contains the
-`TypeVarTuple`:
+An alias, `NewType`, or type-variable bound containing a `TypeVarTuple` does not make the argument
+valid either:
 
 ```py
 from typing import NewType, TypeVar
@@ -363,13 +358,12 @@ X = NewType("X", list[TypeVarTuple])
 T = TypeVar("T", bound=list[TypeVarTuple])
 
 def _(alias: Alias, newtype: X, bounded: T) -> None:
-    reveal_type(Generic[alias])  # revealed: @Todo(ParamSpecs and TypeVarTuples)
-    reveal_type(Generic[newtype])  # revealed: @Todo(ParamSpecs and TypeVarTuples)
-    reveal_type(Generic[bounded])  # revealed: @Todo(ParamSpecs and TypeVarTuples)
+    Generic[alias]  # error: [invalid-argument-type]
+    Generic[newtype]  # error: [invalid-argument-type]
+    Generic[bounded]  # error: [invalid-argument-type]
 ```
 
-An unused protocol argument does not trigger this limitation. We reject the protocol instance as an
-invalid `Generic` argument:
+We reject protocol instances whether their `TypeVarTuple` argument is unused or exposed by a member:
 
 ```py
 class Unused[T](Protocol):
@@ -378,21 +372,16 @@ class Unused[T](Protocol):
 def _(value: Unused[TypeVarTuple]) -> None:
     Generic[value]  # error: [invalid-argument-type]
     class C(Generic[value]): ...  # error: [invalid-argument-type]
-```
 
-We still treat a `TypeVarTuple` exposed through a protocol member as unsupported:
-
-```py
 class Used[T](Protocol):
     value: T
 
 def _(value: Used[TypeVarTuple]) -> None:
-    # TODO: Reject protocol instances as `Generic` arguments.
-    reveal_type(Generic[value])  # revealed: @Todo(ParamSpecs and TypeVarTuples)
+    Generic[value]  # error: [invalid-argument-type]
 ```
 
-A protocol parameter's bound can trigger the same limitation, even when the protocol is specialized
-with `Any`:
+A protocol parameter's bound does not make an instance a valid argument, even when the protocol is
+specialized with `Any`:
 
 ```py
 from typing import Any
@@ -401,13 +390,13 @@ class Bounded[T: list[TypeVarTuple]](Protocol):
     def method(self) -> T: ...
 
 def _(value: Bounded[Any]) -> None:
-    reveal_type(Generic[value])  # revealed: @Todo(ParamSpecs and TypeVarTuples)
+    Generic[value]  # error: [invalid-argument-type]
 ```
 
 ## Type variable defaults in generic arguments
 
-A type-variable default does not restrict values annotated with that type variable. We currently
-leave these invalid arguments unchecked when the default contains a `TypeVarTuple`:
+A type-variable default does not restrict values annotated with that type variable. A default
+containing a `TypeVarTuple` therefore does not make these arguments valid:
 
 ```toml
 [environment]
@@ -420,16 +409,14 @@ from typing import Generic, Protocol, TypeVar, TypeVarTuple
 T = TypeVar("T", default=list[TypeVarTuple])
 
 def _(value: T) -> None:
-    # TODO: Reject these arguments; a default does not constrain every value of `T`.
-    reveal_type(Generic[value])  # revealed: @Todo(ParamSpecs and TypeVarTuples)
-    reveal_type(Protocol[value])  # revealed: @Todo(ParamSpecs and TypeVarTuples)
+    Generic[value]  # error: [invalid-argument-type]
+    Protocol[value]  # error: [invalid-argument-type]
 ```
 
 ## Recursive structural types in generic arguments
 
-A recursive protocol instance is not a valid `Generic` argument. When its members keep changing
-specialization, we currently treat the instance as unsupported instead of reporting an invalid
-argument:
+A recursive protocol instance is not a valid `Generic` argument, even when its members keep changing
+specialization:
 
 ```toml
 [environment]
@@ -445,9 +432,8 @@ class Recursive[T](Protocol):
     next: Recursive[list[T]]
 
 def _(value: Recursive[int]) -> None:
-    # TODO: Reject protocol instances as `Generic` arguments.
-    reveal_type(Generic[value])  # revealed: @Todo(ParamSpecs and TypeVarTuples)
-    class X(Generic[value]): ...
+    Generic[value]  # error: [invalid-argument-type]
+    class X(Generic[value]): ...  # error: [invalid-argument-type]
 ```
 
 The recursive reference can also appear in a method's return type:
@@ -457,11 +443,10 @@ class RecursiveMethod[T](Protocol):
     def method(self) -> RecursiveMethod[list[T]]: ...
 
 def _(value: RecursiveMethod[int]) -> None:
-    # TODO: Reject protocol instances as `Generic` arguments.
-    reveal_type(Generic[value])  # revealed: @Todo(ParamSpecs and TypeVarTuples)
+    Generic[value]  # error: [invalid-argument-type]
 ```
 
-Properties whose return types keep changing specialization have the same limitation:
+The same restriction applies to properties whose return types keep changing specialization:
 
 ```py
 class RecursiveProperty[T](Protocol):
@@ -469,8 +454,7 @@ class RecursiveProperty[T](Protocol):
     def next(self) -> RecursiveProperty[list[T]]: ...
 
 def _(value: RecursiveProperty[int]) -> None:
-    # TODO: Reject protocol instances as `Generic` arguments.
-    reveal_type(Generic[value])  # revealed: @Todo(ParamSpecs and TypeVarTuples)
+    Generic[value]  # error: [invalid-argument-type]
 ```
 
 Mutually recursive methods can keep changing specialization too. Each round below adds another
@@ -484,37 +468,34 @@ class Right[U](Protocol):
     def method(self) -> Left[U]: ...
 
 def _(value: Left[int]) -> None:
-    # TODO: Reject protocol instances as `Generic` arguments.
-    reveal_type(Generic[value])  # revealed: @Todo(ParamSpecs and TypeVarTuples)
+    Generic[value]  # error: [invalid-argument-type]
 ```
 
-The same limitation applies when a non-generic protocol's method returns the growing type:
+We also reject a non-generic protocol instance whose method returns the growing type:
 
 ```py
 class Root(Protocol):
     def method(self) -> Left[int]: ...
 
 def _(value: Root) -> None:
-    # TODO: Reject protocol instances as `Generic` arguments.
-    reveal_type(Generic[value])  # revealed: @Todo(ParamSpecs and TypeVarTuples)
+    Generic[value]  # error: [invalid-argument-type]
 ```
 
-A growing recursive `TypedDict` is also treated as unsupported:
+A growing recursive `TypedDict` is also invalid:
 
 ```py
 class Payload[T](TypedDict):
     child: Payload[list[T]]
 
 def _(value: Payload[int]) -> None:
-    # TODO: Reject `TypedDict` instances as `Generic` arguments.
-    reveal_type(Generic[value])  # revealed: @Todo(ParamSpecs and TypeVarTuples)
-    class X(Generic[value]): ...
+    Generic[value]  # error: [invalid-argument-type]
+    class X(Generic[value]): ...  # error: [invalid-argument-type]
 ```
 
 ## Recursive bounds in generic arguments
 
 A recursive bound on an unused protocol parameter does not make the protocol instance a valid
-`Generic` argument. We currently leave this argument unchecked:
+`Generic` argument:
 
 ```toml
 [environment]
@@ -530,8 +511,7 @@ class P[T: Recursive[int]](Protocol):
     def method(self) -> int: ...
 
 def _(value: P[Any]) -> None:
-    # TODO: Reject protocol instances as `Generic` arguments.
-    reveal_type(Generic[value])  # revealed: @Todo(ParamSpecs and TypeVarTuples)
+    Generic[value]  # error: [invalid-argument-type]
 ```
 
 ## Specializing classes with unavailable generic context
